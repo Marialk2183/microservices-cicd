@@ -2,25 +2,27 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_HUB_REPO = 'meer03computer021engineer'
+        // Jenkins credentials ID for Docker Hub (set this in Jenkins Credentials)
+        DOCKERHUB_CREDENTIALS = credentials('dockerhub-login')
+        // Your Docker Hub username (repository prefix)
+        DOCKERHUB_REPO = 'meer03computer021engineer'
     }
 
     stages {
+
         stage('Checkout Code') {
             steps {
-                git 'https://github.com/Marialk2183/microservices-cicd.git'
+                git branch: 'main', url: 'https://github.com/Marialk2183/microservices-cicd.git'
             }
         }
 
-        stage('Build and Test') {
+        stage('Docker Login') {
             steps {
-                dir('user-service') {
-                    bat 'npm install'
-                    bat 'npm test || echo "No tests configured"'
-                }
-                dir('order-service') {
-                    bat 'npm install'
-                    bat 'npm test || echo "No tests configured"'
+                withCredentials([usernamePassword(credentialsId: 'dockerhub-login', usernameVariable: 'DOCKERHUB_USER', passwordVariable: 'DOCKERHUB_PSW')]) {
+                    // Safe Docker login for Windows
+                    bat 'docker logout'
+                    bat "echo %DOCKERHUB_PSW% | docker login -u %DOCKERHUB_USER% --password-stdin"
+                    bat 'docker info'  // Verify login success
                 }
             }
         }
@@ -28,30 +30,43 @@ pipeline {
         stage('Build Docker Images') {
             steps {
                 script {
-                    docker.build("${DOCKER_HUB_REPO}/user-service:latest", "./user-service")
-                    docker.build("${DOCKER_HUB_REPO}/order-service:latest", "./order-service")
+                    bat "docker build -t ${env.DOCKERHUB_REPO}/user-service:latest ./user-service"
+                    bat "docker build -t ${env.DOCKERHUB_REPO}/order-service:latest ./order-service"
+                    bat "docker images"  // Debug: confirm images built
                 }
             }
         }
 
         stage('Push to Docker Hub') {
             steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'dockerhub-credentials',
-                    usernameVariable: 'USER',
-                    passwordVariable: 'PASS'
-                )]) {
-                    bat 'echo %PASS% | docker login -u %USER% --password-stdin'
-                    bat "docker push ${DOCKER_HUB_REPO}/user-service:latest"
-                    bat "docker push ${DOCKER_HUB_REPO}/order-service:latest"
-                }
+                bat "docker push ${env.DOCKERHUB_REPO}/user-service:latest"
+                bat "docker push ${env.DOCKERHUB_REPO}/order-service:latest"
             }
         }
 
         stage('Deploy Containers') {
             steps {
-                bat 'docker-compose -f docker-compose.yml up -d --force-recreate'
+                script {
+                    // Stop & remove any existing containers
+                    bat 'docker stop user-service || echo "No running user-service container"'
+                    bat 'docker rm user-service || echo "No existing user-service container"'
+                    bat 'docker stop order-service || echo "No running order-service container"'
+                    bat 'docker rm order-service || echo "No existing order-service container"'
+
+                    // Deploy new containers
+                    bat "docker run -d -p 3000:3000 --name user-service ${env.DOCKERHUB_REPO}/user-service:latest"
+                    bat "docker run -d -p 4000:4000 --name order-service ${env.DOCKERHUB_REPO}/order-service:latest"
+                }
             }
+        }
+    }
+
+    post {
+        success {
+            echo '✅ Deployment Successful!'
+        }
+        failure {
+            echo '❌ Pipeline Failed!'
         }
     }
 }
